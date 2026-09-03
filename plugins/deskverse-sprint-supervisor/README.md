@@ -57,10 +57,11 @@ descrições com no máximo cinco palavras, escala reasoning até `xhigh` quando
 necessário, valida testes e navegador, permite commit somente após a validação
 e continua para as demais sprints selecionadas.
 
-O modelo do supervisor é sempre o modelo desta conversa. A fila mantém a
-configuração `codex.subagents.model` e `codex.subagents.reasoning_effort` para
-os subagentes nativos. `codex.model` e `codex.reasoning_effort` são lidos
-somente pelo runner legado.
+O supervisor do chat usa sempre o modelo desta conversa. Para o runner legado,
+a configuração padrão versionada é `gpt-5.6-terra` com esforço `high`. A fila
+mantém `codex.subagents.model` e `codex.subagents.reasoning_effort` como
+`gpt-5.6-luna` e `xhigh` para os subagentes nativos. `codex.model` e
+`codex.reasoning_effort` são lidos somente pelo runner legado.
 
 ## Runner autônomo legado
 

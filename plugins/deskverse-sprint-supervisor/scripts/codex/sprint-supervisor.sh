@@ -507,7 +507,7 @@ ACCOUNT_PAUSE_HOURS="$(node -e 'const x=JSON.parse(process.argv[1]); process.std
 if ! [[ "$ACCOUNT_PAUSE_HOURS" =~ ^[1-9][0-9]*$ ]]; then ACCOUNT_PAUSE_HOURS="$PAUSE_HOURS"; fi
 if [[ "$CONTROLLER" == "runner" ]]; then
   # codex.model/reasoning_effort pertencem somente ao runner legado.
-  CODEX_MODEL="${MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.model||"gpt-5.6-sol")' "$QUEUE_CONFIG")}"
+  CODEX_MODEL="${MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.model||"gpt-5.6-terra")' "$QUEUE_CONFIG")}"
   CODEX_REASONING="${REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.reasoning_effort||"high")' "$QUEUE_CONFIG")}"
 else
   # No chat, o supervisor é a conversa atual; não há um modelo separado a
@@ -515,8 +515,8 @@ else
   CODEX_MODEL="chat"
   CODEX_REASONING="chat"
 fi
-SUBAGENT_MODEL="${SUBAGENT_MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.model||"gpt-5.6-terra")' "$QUEUE_CONFIG")}"
-SUBAGENT_REASONING="${SUBAGENT_REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.reasoning_effort||"medium")' "$QUEUE_CONFIG")}"
+SUBAGENT_MODEL="${SUBAGENT_MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.model||"gpt-5.6-luna")' "$QUEUE_CONFIG")}"
+SUBAGENT_REASONING="${SUBAGENT_REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.reasoning_effort||"xhigh")' "$QUEUE_CONFIG")}"
 AUTO_COMMIT_DIRTY="${AUTO_COMMIT_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.auto_commit_dirty ?? true))' "$QUEUE_CONFIG")}"
 PUSH_MODE="${PUSH_MODE_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.push?.mode||"never")' "$QUEUE_CONFIG")}"
 PUSH_EVERY="${PUSH_EVERY_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.push?.every_commits||4))' "$QUEUE_CONFIG")}"
