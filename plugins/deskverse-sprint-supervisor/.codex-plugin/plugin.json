@@ -1,0 +1,25 @@
+{
+  "name": "deskverse-sprint-supervisor",
+  "version": "0.1.0+codex.20260903141732",
+  "description": "Liste, selecione e execute sprints do Deskverse.",
+  "author": {
+    "name": "Deskverse"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Sprint Supervisor",
+    "shortDescription": "Selecione e execute sprints do Deskverse.",
+    "longDescription": "Lista sprints pendentes, executa apenas os IDs escolhidos e acompanha o supervisor persistente no Codex.",
+    "developerName": "Deskverse",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Liste as sprints pendentes e aguarde minha sele\u00e7\u00e3o.",
+      "Execute as sprints 01 e 02a em sequ\u00eancia.",
+      "Mostre o status atual do supervisor."
+    ]
+  }
+}
