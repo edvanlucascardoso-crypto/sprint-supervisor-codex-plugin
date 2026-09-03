@@ -15,6 +15,7 @@ QUEUE_PATH="$REPO_ROOT/docs/automation/sprint-queue.json"
 STATE_ROOT=""
 MODE="run"
 MODE_EXPLICIT="false"
+CONTROLLER="chat"
 SPRINTS_OVERRIDE=""
 PAUSE_HOURS=5
 PUSH_MODE_OVERRIDE=""
@@ -42,7 +43,7 @@ ORIGINAL_ARGS=("$@")
 
 usage() {
   cat <<'EOF'
-Uso: sprint-supervisor.sh [--mode run|dry-run|reset-pause|status|list|message] [--repository PATH]
+Uso: sprint-supervisor.sh [--controller chat|runner] [--mode run|plan|reconcile|dry-run|reset-pause|status|list|message] [--repository PATH]
                           [--queue PATH] [--state-root PATH] [--pause-hours N]
                           [--sprints ID[,ID...]] [--sprint ID]
                           [--push-on never|sprint|commits|both] [--push-every N]
@@ -66,6 +67,7 @@ EOF
 while (($#)); do
   case "$1" in
     --mode) [[ $# -ge 2 ]] || { echo 'Falta valor para --mode.' >&2; exit 2; }; MODE="${2,,}"; MODE_EXPLICIT="true"; shift 2 ;;
+    --controller) [[ $# -ge 2 ]] || { echo 'Falta valor para --controller.' >&2; exit 2; }; CONTROLLER="${2,,}"; shift 2 ;;
     --repository) [[ $# -ge 2 ]] || { echo 'Falta valor para --repository.' >&2; exit 2; }; REPO_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
     --sprints) [[ $# -ge 2 ]] || { echo 'Falta valor para --sprints.' >&2; exit 2; }; SPRINTS_OVERRIDE="$2"; shift 2 ;;
     --sprint) [[ $# -ge 2 ]] || { echo 'Falta valor para --sprint.' >&2; exit 2; }; if [[ -n "$SPRINTS_OVERRIDE" ]]; then SPRINTS_OVERRIDE+=",$2"; else SPRINTS_OVERRIDE="$2"; fi; shift 2 ;;
@@ -98,8 +100,13 @@ while (($#)); do
 done
 
 case "$MODE" in
-  run|dry-run|reset-pause|status|list|message) ;;
+  run|plan|reconcile|dry-run|reset-pause|status|list|message) ;;
   *) echo "Modo inválido: $MODE" >&2; exit 2 ;;
+esac
+
+case "$CONTROLLER" in
+  chat|runner) ;;
+  *) echo "Controller inválido: $CONTROLLER (use chat ou runner)." >&2; exit 2 ;;
 esac
 
 if ! [[ "$PAUSE_HOURS" =~ ^[0-9]+$ ]] || (( PAUSE_HOURS <= 0 )); then
@@ -127,6 +134,14 @@ if ! [[ "$LOOP_INTERVAL" =~ ^[0-9]+$ ]]; then
 fi
 if [[ "$LOOP_ENABLED" == "true" && "$MODE" != "run" ]]; then
   echo '--loop só pode ser usado com --mode run.' >&2
+  exit 2
+fi
+if [[ "$LOOP_ENABLED" == "true" && "$CONTROLLER" != "runner" ]]; then
+  echo '--loop requer --controller runner; o supervisor principal é o chat.' >&2
+  exit 2
+fi
+if [[ "$CONTROLLER" == "chat" && ( -n "$MODEL_OVERRIDE" || -n "$REASONING_OVERRIDE" ) ]]; then
+  echo '--model/--reasoning-effort pertencem apenas ao runner legado; o supervisor chat usa o modelo do chat.' >&2
   exit 2
 fi
 if [[ -n "$PUSH_MODE_OVERRIDE" ]] && [[ "$PUSH_MODE_OVERRIDE" != "never" && "$PUSH_MODE_OVERRIDE" != "sprint" && "$PUSH_MODE_OVERRIDE" != "commits" && "$PUSH_MODE_OVERRIDE" != "both" ]]; then
@@ -247,6 +262,122 @@ fi
 source "$SCRIPT_DIR/supervisor-ui.sh"
 source "$SCRIPT_DIR/supervisor-state.sh"
 
+write_chat_handoff() {
+  local plan_dir="$STATE_ROOT/plans"
+  mkdir -p "$plan_dir"
+  PLAN_STATE_ROOT="$STATE_ROOT" PLAN_REPO_ROOT="$REPO_ROOT" PLAN_QUEUE_PATH="$QUEUE_PATH" \
+    PLAN_SELECTION_JSON="$selection" PLAN_RUN_ID="$RUN_ID" PLAN_CONTROLLER="$CONTROLLER" \
+    PLAN_MODEL="$CODEX_MODEL" PLAN_REASONING="$CODEX_REASONING" \
+    PLAN_SUBAGENT_MODEL="$SUBAGENT_MODEL" PLAN_SUBAGENT_REASONING="$SUBAGENT_REASONING" \
+    PLAN_SUBAGENT_LADDER="$SUBAGENT_LADDER" PLAN_DOCUMENT_PATH="$DOCUMENT_PATH" node <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const stateRoot = process.env.PLAN_STATE_ROOT;
+const selection = JSON.parse(process.env.PLAN_SELECTION_JSON);
+const queue = JSON.parse(fs.readFileSync(process.env.PLAN_QUEUE_PATH, 'utf8').replace(/^\uFEFF/, ''));
+const item = (queue.items || []).find(candidate => String(candidate.id) === String(selection.id)) || {};
+const documentPath = process.env.PLAN_DOCUMENT_PATH;
+const documentText = fs.readFileSync(documentPath, 'utf8');
+const title = item.title || item.name || documentText.match(/^#\s+(.+)$/m)?.[1]?.trim() || `Sprint ${selection.id}`;
+const controller = process.env.PLAN_CONTROLLER;
+const chatSupervisor = controller === 'chat';
+const supervisor = {
+  role: chatSupervisor ? 'supervisor do chat' : 'runner legado',
+  model: chatSupervisor ? 'modelo atual do chat' : process.env.PLAN_MODEL,
+  reasoning_effort: chatSupervisor ? 'esforço atual do chat' : process.env.PLAN_REASONING
+};
+const handoff = {
+  version: 1,
+  kind: 'sprint-handoff',
+  generated_at: new Date().toISOString(),
+  controller,
+  supervisor,
+  legacy_runner: {
+    active: !chatSupervisor,
+    codex_model: chatSupervisor ? null : process.env.PLAN_MODEL,
+    codex_reasoning_effort: chatSupervisor ? null : process.env.PLAN_REASONING,
+    configuration_source: 'codex.model e codex.reasoning_effort só são lidos com --controller runner'
+  },
+  sprint: {
+    id: selection.id,
+    title,
+    size: selection.size || item.size || 'medium',
+    document: selection.document || item.document || null,
+    depends_on: item.depends_on || []
+  },
+  subagents: {
+    execution: 'subagentes nativos do Codex',
+    model: process.env.PLAN_SUBAGENT_MODEL,
+    reasoning_effort: process.env.PLAN_SUBAGENT_REASONING,
+    escalation_ladder: process.env.PLAN_SUBAGENT_LADDER,
+    description_max_words: 5
+  },
+  required_steps: [
+    'Ler AGENTS.md, docs/memoria-codex.md e o documento da sprint',
+    'Delegar a implementação a um subagente nativo',
+    'Escalar reasoning até xhigh se necessário',
+    'Validar testes e navegador quando aplicável',
+    'Fazer commit somente após validação',
+    'Continuar para a próxima sprint elegível'
+  ],
+  validation: {
+    repository: 'raiz Git, fila e documentos validados pelo runner auxiliar',
+    tests: true,
+    browser: true,
+    commit_after_validation: true
+  },
+  next_action: `Delegar a Sprint ${selection.id} a um subagente nativo e acompanhar o gate de validação.`
+};
+
+const plansDir = path.join(stateRoot, 'plans');
+fs.mkdirSync(plansDir, { recursive: true });
+const jsonPath = path.join(plansDir, `${process.env.PLAN_RUN_ID}.json`);
+const markdownPath = path.join(plansDir, `${process.env.PLAN_RUN_ID}.md`);
+const writeAtomic = (target, contents) => {
+  const temporary = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, contents, 'utf8');
+  fs.renameSync(temporary, target);
+};
+const value = input => String(input ?? '—').replace(/\r?\n/g, ' ');
+const markdown = `# Handoff · Sprint ${value(selection.id)}
+
+**Título:** ${value(title)}  \\
+**Controlador:** ${chatSupervisor ? 'Supervisor do chat' : 'Runner legado'}  \\
+**Supervisor:** ${value(supervisor.model)} / ${value(supervisor.reasoning_effort)}  \\
+**Documento:** ${value(handoff.sprint.document)}
+
+## Regra de execução
+
+${chatSupervisor
+  ? 'O modelo e o reasoning do supervisor são os da conversa atual. Este handoff não inicia `codex exec`; `codex.model` só é usado pelo runner legado.'
+  : 'Este plano será executado pelo runner legado, que lê `codex.model` e `codex.reasoning_effort` da fila.'}
+
+## Subagente nativo
+
+- Modelo inicial: \`${value(handoff.subagents.model)}\`
+- Reasoning inicial: \`${value(handoff.subagents.reasoning_effort)}\`
+- Escada de recuperação: \`${value(handoff.subagents.escalation_ladder)}\`
+- Descrições de progresso: no máximo cinco palavras
+
+## Sequência obrigatória
+
+${handoff.required_steps.map(step => `1. ${step}`).join('\n')}
+
+## Validação e continuidade
+
+- Validar testes e navegador após a sprint, quando aplicável.
+- Criar commit somente depois dos gates passarem.
+- Após a confirmação, selecionar e delegar a próxima sprint elegível.
+
+**Próxima ação:** ${value(handoff.next_action)}
+`;
+writeAtomic(jsonPath, `${JSON.stringify(handoff, null, 2)}\n`);
+writeAtomic(markdownPath, markdown);
+console.log(JSON.stringify({ ...handoff, paths: { json: jsonPath, markdown: markdownPath } }, null, 2));
+NODE
+}
+
 if [[ "$MODE" == "message" ]]; then
   message_recover_processing
   queued_message="$(message_enqueue "$MESSAGE_TEXT")"
@@ -257,9 +388,31 @@ fi
 
 if [[ "$MODE" == "status" ]]; then
   if [[ -f "$STATE_ROOT/status.json" ]]; then
-    STATE_PATH="$STATE_ROOT/status.json" node -e 'const fs=require("fs"); process.stdout.write(fs.readFileSync(process.env.STATE_PATH,"utf8"));'
+    STATE_PATH="$STATE_ROOT/status.json" REQUESTED_CONTROLLER="$CONTROLLER" node <<'NODE'
+const fs = require('fs');
+const raw = fs.readFileSync(process.env.STATE_PATH, 'utf8').replace(/^\uFEFF/, '');
+let status = {};
+try { status = JSON.parse(raw); } catch { process.stdout.write(raw); process.exit(0); }
+const controller = status.controller || (status.model && status.model !== 'chat' ? 'runner' : process.env.REQUESTED_CONTROLLER || 'chat');
+status.controller = controller;
+status.supervisor_role = controller === 'runner' ? 'runner legado' : 'supervisor do chat';
+status.subagent_model = status.subagent_model || null;
+status.subagent_reasoning_effort = status.subagent_reasoning_effort || null;
+process.stdout.write(JSON.stringify(status, null, 2) + '\n');
+NODE
   elif [[ -f "$STATE_PATH" ]]; then
-    STATE_PATH="$STATE_PATH" node -e 'const fs=require("fs"); process.stdout.write(fs.readFileSync(process.env.STATE_PATH,"utf8"));'
+    STATE_PATH="$STATE_PATH" REQUESTED_CONTROLLER="$CONTROLLER" node <<'NODE'
+const fs = require('fs');
+const raw = fs.readFileSync(process.env.STATE_PATH, 'utf8').replace(/^\uFEFF/, '');
+let status = {};
+try { status = JSON.parse(raw); } catch { process.stdout.write(raw); process.exit(0); }
+const controller = status.controller || (status.model && status.model !== 'chat' ? 'runner' : process.env.REQUESTED_CONTROLLER || 'chat');
+status.controller = controller;
+status.supervisor_role = controller === 'runner' ? 'runner legado' : 'supervisor do chat';
+status.subagent_model = status.subagent_model || null;
+status.subagent_reasoning_effort = status.subagent_reasoning_effort || null;
+process.stdout.write(JSON.stringify(status, null, 2) + '\n');
+NODE
   else
     echo "Ainda não há uma execução registrada em $STATE_ROOT."
   fi
@@ -267,6 +420,26 @@ if [[ "$MODE" == "status" ]]; then
 fi
 
 cd "$REPO_ROOT"
+
+validate_repository() {
+  local actual_root
+  actual_root="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "O diretório não é um repositório Git: $REPO_ROOT" >&2
+    return 1
+  }
+  actual_root="$(cd "$actual_root" && pwd -P)"
+  if [[ "$actual_root" != "$REPO_ROOT" ]]; then
+    echo "O diretório informado não é a raiz do repositório: $REPO_ROOT" >&2
+    echo "Raiz detectada: $actual_root" >&2
+    return 1
+  fi
+  [[ -f "$QUEUE_PATH" ]] || { echo "Fila não encontrada: $QUEUE_PATH" >&2; return 1; }
+  [[ -d "$REPO_ROOT/docs/sprints" ]] || { echo "Diretório de sprints não encontrado: $REPO_ROOT/docs/sprints" >&2; return 1; }
+}
+
+if ! validate_repository; then
+  exit 2
+fi
 
 if [[ "$MODE" == "list" ]]; then
   QUEUE_PATH="$QUEUE_PATH" STATE_PATH="$STATE_PATH" REPO_ROOT="$REPO_ROOT" node <<'NODE'
@@ -325,11 +498,23 @@ console.log(JSON.stringify(queue.codex || {}));
 NODE
 )"
 ACCOUNTS_JSON="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(JSON.stringify(x.accounts||{enabled:false,profiles:[]}))' "$QUEUE_CONFIG")"
-ACCOUNT_ROTATION_ENABLED="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.enabled !== false && Array.isArray(x.profiles) && x.profiles.length > 0))' "$ACCOUNTS_JSON")"
+if [[ "$CONTROLLER" == "runner" ]]; then
+  ACCOUNT_ROTATION_ENABLED="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.enabled !== false && Array.isArray(x.profiles) && x.profiles.length > 0))' "$ACCOUNTS_JSON")"
+else
+  ACCOUNT_ROTATION_ENABLED="false"
+fi
 ACCOUNT_PAUSE_HOURS="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.all_exhausted_pause_hours || process.argv[2]))' "$ACCOUNTS_JSON" "$PAUSE_HOURS")"
 if ! [[ "$ACCOUNT_PAUSE_HOURS" =~ ^[1-9][0-9]*$ ]]; then ACCOUNT_PAUSE_HOURS="$PAUSE_HOURS"; fi
-CODEX_MODEL="${MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.model||"gpt-5.6-sol")' "$QUEUE_CONFIG")}"
-CODEX_REASONING="${REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.reasoning_effort||"high")' "$QUEUE_CONFIG")}"
+if [[ "$CONTROLLER" == "runner" ]]; then
+  # codex.model/reasoning_effort pertencem somente ao runner legado.
+  CODEX_MODEL="${MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.model||"gpt-5.6-sol")' "$QUEUE_CONFIG")}"
+  CODEX_REASONING="${REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.reasoning_effort||"high")' "$QUEUE_CONFIG")}"
+else
+  # No chat, o supervisor é a conversa atual; não há um modelo separado a
+  # selecionar nem uma chamada ao binário Codex a partir deste script.
+  CODEX_MODEL="chat"
+  CODEX_REASONING="chat"
+fi
 SUBAGENT_MODEL="${SUBAGENT_MODEL_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.model||"gpt-5.6-terra")' "$QUEUE_CONFIG")}"
 SUBAGENT_REASONING="${SUBAGENT_REASONING_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.subagents?.reasoning_effort||"medium")' "$QUEUE_CONFIG")}"
 AUTO_COMMIT_DIRTY="${AUTO_COMMIT_OVERRIDE:-$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(String(x.auto_commit_dirty ?? true))' "$QUEUE_CONFIG")}"
@@ -351,27 +536,30 @@ case "$SUBAGENT_REASONING" in
   xhigh|max|ultra) SUBAGENT_LADDER="$SUBAGENT_REASONING" ;;
   *) SUBAGENT_LADDER="$SUBAGENT_REASONING -> high -> xhigh" ;;
 esac
-CODEX_CONFIG_ARGS=(
-  --config "model_reasoning_effort=\"$CODEX_REASONING\""
-  --config "agents.default_subagent_model=\"$SUBAGENT_MODEL\""
-  --config "agents.default_subagent_reasoning_effort=\"$SUBAGENT_REASONING\""
-)
-if [[ "$COMPACTION_ENABLED" == "true" ]]; then
-  CODEX_CONFIG_ARGS+=(
-    --config "model_auto_compact_token_limit=$COMPACTION_LIMIT"
-    --config "model_auto_compact_token_limit_scope=\"$COMPACTION_SCOPE\""
+CODEX_CONFIG_ARGS=()
+if [[ "$CONTROLLER" == "runner" ]]; then
+  CODEX_CONFIG_ARGS=(
+    --config "model_reasoning_effort=\"$CODEX_REASONING\""
+    --config "agents.default_subagent_model=\"$SUBAGENT_MODEL\""
+    --config "agents.default_subagent_reasoning_effort=\"$SUBAGENT_REASONING\""
   )
-else
-  # Zero é o valor documentado pelo exemplo de configuração do Codex para
-  # desativar/substituir o limite automático nesta execução.
-  CODEX_CONFIG_ARGS+=(--config "model_auto_compact_token_limit=0")
+  if [[ "$COMPACTION_ENABLED" == "true" ]]; then
+    CODEX_CONFIG_ARGS+=(
+      --config "model_auto_compact_token_limit=$COMPACTION_LIMIT"
+      --config "model_auto_compact_token_limit_scope=\"$COMPACTION_SCOPE\""
+    )
+  else
+    # Zero é o valor documentado pelo exemplo de configuração do Codex para
+    # desativar/substituir o limite automático nesta execução.
+    CODEX_CONFIG_ARGS+=(--config "model_auto_compact_token_limit=0")
+  fi
 fi
 
 if ! validate_queue; then
   echo 'A fila não cobre todas as sprints pendentes; corrija sprint-queue.json antes de executar.' >&2
   exit 2
 fi
-if ! validate_accounts "$ACCOUNTS_JSON"; then
+if [[ "$CONTROLLER" == "runner" ]] && ! validate_accounts "$ACCOUNTS_JSON"; then
   echo 'Configuração de contas inválida; revise codex.accounts na sprint-queue.json.' >&2
   exit 2
 fi
@@ -502,6 +690,16 @@ trap on_interrupt INT TERM
 
 ensure_state
 reconcile_completed_sprints
+state_patch "$(node -e 'console.log(JSON.stringify({controller:process.argv[1],supervisor_role:process.argv[1]==="chat"?"chat_supervisor":"legacy_runner",supervisor_model:process.argv[2],supervisor_reasoning_effort:process.argv[3],last_reconciled_at:new Date().toISOString()}))' "$CONTROLLER" "$CODEX_MODEL" "$CODEX_REASONING")"
+
+if [[ "$MODE" == "reconcile" ]]; then
+  completed_json="$(state_field completed || printf '[]')"
+  state_patch "$(node -e 'console.log(JSON.stringify({status:"idle",current:null,last_error:null}))')"
+  STATUS_PHASE="reconciled"
+  status_update "$STATUS_PHASE" 'Sprints concluídas reconciliadas a partir dos documentos.'
+  printf '{"controller":"%s","mode":"reconcile","completed":%s}\n' "$CONTROLLER" "$completed_json"
+  exit 0
+fi
 
 if [[ "$MODE" == "reset-pause" ]]; then
   state_patch "$(node -e 'console.log(JSON.stringify({pause_until:null,status:"idle",last_error:null,account_cooldowns:{}}))')"
@@ -510,7 +708,9 @@ if [[ "$MODE" == "reset-pause" ]]; then
   exit 0
 fi
 
-initialize_push_base
+if [[ "$CONTROLLER" == "runner" ]]; then
+  initialize_push_base
+fi
 
 selection="$(STATE_PATH="$STATE_PATH" QUEUE_PATH="$QUEUE_PATH" BUDGET_PATH="$BUDGET_PATH" REPO_ROOT="$REPO_ROOT" REQUESTED_SPRINTS="$SPRINTS_OVERRIDE" node <<'NODE'
 const fs = require('fs');
@@ -648,8 +848,32 @@ DETECTED_COMPLETED="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdo
 status_update "$STATUS_PHASE" "Sprint $NEXT_ID selecionada; verificando o checkout e o documento."
 [[ -z "$DETECTED_COMPLETED" ]] || log "Conclusões detectadas automaticamente: $DETECTED_COMPLETED."
 [[ -z "$DECISION" ]] || log "$DECISION"
-DOCUMENT_PATH="$REPO_ROOT/$DOCUMENT"
+if [[ "$DOCUMENT" = /* ]]; then
+  DOCUMENT_PATH="$DOCUMENT"
+else
+  DOCUMENT_PATH="$REPO_ROOT/$DOCUMENT"
+fi
 [[ -f "$DOCUMENT_PATH" ]] || { state_patch "$(node -e 'console.log(JSON.stringify({status:"needs_attention",last_error:process.argv[1]}))' "Documento da sprint não encontrado: $DOCUMENT_PATH")"; exit 10; }
+
+if [[ "$MODE" == "plan" || ( "$CONTROLLER" == "chat" && "$MODE" == "run" ) ]]; then
+  RUN_ID="${NEXT_ID}-${CONTROLLER}-$(date '+%Y%m%d-%H%M%S')"
+  STATUS_PHASE="planning"
+  status_update "$STATUS_PHASE" "Handoff da Sprint $NEXT_ID sendo preparado para o supervisor do chat."
+  handoff_json="$(write_chat_handoff)"
+  plan_json_path="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.paths.json)' "$handoff_json")"
+  plan_markdown_path="$(node -e 'const x=JSON.parse(process.argv[1]); process.stdout.write(x.paths.markdown)' "$handoff_json")"
+  if [[ "$MODE" == "plan" ]]; then
+    STATUS_PHASE="planned"
+    next_state="planned"
+  else
+    STATUS_PHASE="awaiting_subagent"
+    next_state="awaiting_subagent"
+  fi
+  state_patch "$(node -e 'console.log(JSON.stringify({status:process.argv[1],current:process.argv[2],plan_path:process.argv[3],handoff_path:process.argv[4],last_error:null}))' "$next_state" "$NEXT_ID" "$plan_json_path" "$plan_markdown_path")"
+  status_update "$STATUS_PHASE" "Sprint $NEXT_ID pronta para delegação a subagente nativo."
+  printf '%s\n' "$handoff_json"
+  exit 0
+fi
 
 cd "$REPO_ROOT"
 if [[ "$ACCOUNT_ROTATION_ENABLED" == "true" ]]; then

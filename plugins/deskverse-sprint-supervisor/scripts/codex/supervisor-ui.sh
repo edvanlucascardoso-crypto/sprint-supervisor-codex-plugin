@@ -27,10 +27,14 @@ ui_header() {
   UI_INITIALIZED=1
   printf '\n%s╭─ %sDESKVERSE · SPRINT SUPERVISOR%s ─────────────────────────╮%s\n' \
     "$C_DIM" "$C_BOLD" "$C_DIM" "$C_RESET"
-  printf '%s│%s executor  %s%s%s / %s%s%s\n' \
-    "$C_DIM" "$C_RESET" "$C_CYAN" "${CODEX_MODEL:-—}" "$C_RESET" \
-    "$C_YELLOW" "${CODEX_REASONING:-—}" "$C_RESET"
-  printf '%s│%s subagents %s%s%s / %s%s%s\n' \
+  if [[ "${CONTROLLER:-chat}" == "chat" ]]; then
+    printf '%s│%s supervisor %schat%s (modelo desta conversa)\n' "$C_DIM" "$C_RESET" "$C_CYAN" "$C_RESET"
+  else
+    printf '%s│%s runner     %s%s%s / %s%s%s\n' \
+      "$C_DIM" "$C_RESET" "$C_CYAN" "${CODEX_MODEL:-—}" "$C_RESET" \
+      "$C_YELLOW" "${CODEX_REASONING:-—}" "$C_RESET"
+  fi
+  printf '%s│%s subagentes %s%s%s / %s%s%s\n' \
     "$C_DIM" "$C_RESET" "$C_BLUE" "${SUBAGENT_MODEL:-—}" "$C_RESET" \
     "$C_YELLOW" "${SUBAGENT_REASONING:-—}" "$C_RESET"
   if [[ -n "${ACTIVE_ACCOUNT_ID:-}" ]]; then
@@ -78,6 +82,7 @@ status_update() {
     STATUS_LAST_AGENT="${LAST_AGENT_MESSAGE:-}" STATUS_PAUSE_UNTIL="${PAUSE_UNTIL:-}" \
     STATUS_AGENTS_JSON="${AGENTS_JSON:-[]}" \
     STATUS_ACCOUNT="${ACTIVE_ACCOUNT_ID:-}" \
+    STATUS_CONTROLLER="${CONTROLLER:-chat}" STATUS_SUPERVISOR_ROLE="${CONTROLLER:-chat}" \
     STATUS_MODEL="${CODEX_MODEL:-}" STATUS_REASONING="${CODEX_REASONING:-}" \
     STATUS_SUBAGENT_MODEL="${SUBAGENT_MODEL:-}" STATUS_SUBAGENT_REASONING="${SUBAGENT_REASONING:-}" \
     STATUS_PUSH_MODE="${PUSH_MODE:-never}" STATUS_PUSH_EVERY="${PUSH_EVERY:-4}" \
@@ -89,6 +94,12 @@ if (fs.existsSync(path)) { try { status = JSON.parse(fs.readFileSync(path, 'utf8
 Object.assign(status, {
   phase: process.env.STATUS_PHASE,
   message: process.env.STATUS_MESSAGE,
+  controller: process.env.STATUS_CONTROLLER || status.controller || 'chat',
+  supervisor_role: process.env.STATUS_SUPERVISOR_ROLE === 'chat'
+    ? 'supervisor do chat'
+    : process.env.STATUS_SUPERVISOR_ROLE === 'runner'
+      ? 'runner legado'
+      : (status.supervisor_role || 'supervisor do chat'),
   run_id: process.env.STATUS_RUN_ID || null,
   sprint: process.env.STATUS_SPRINT || null,
   session_id: process.env.STATUS_SESSION || null,
@@ -121,13 +132,15 @@ const md = `# Deskverse · Supervisor de sprints\n\n` +
   `| Fase | **${mdValue(status.phase)}** |\n` +
   `| Sprint | ${mdValue(status.sprint)} |\n` +
   `| Mensagem | ${mdValue(status.message)} |\n` +
+  `| Controlador | ${mdValue(status.controller === 'chat' ? 'Supervisor do chat' : 'Runner legado')} |\n` +
+  `| Supervisor | ${mdValue(status.supervisor_role)} |\n` +
   `| Eventos JSONL | ${mdValue(status.event_count || 0)} |\n` +
   `| Turnos | ${mdValue(status.turn_count || 0)} |\n` +
   `| Compactações | ${mdValue(status.compaction_count || 0)} |\n` +
   `| Sessão | ${mdValue(status.session_id)} |\n` +
   `| Conta | ${mdValue(status.account)} |\n` +
-  `| Executor | ${mdValue(status.model)} / ${mdValue(status.reasoning_effort)} |\n` +
-  `| Subagentes | ${mdValue(status.subagent_model)} / ${mdValue(status.subagent_reasoning_effort)} |\n` +
+  `| Executor / runner legado | ${mdValue(status.controller === 'chat' ? 'não iniciado pelo script' : `${status.model} / ${status.reasoning_effort}`)} |\n` +
+  `| Subagentes nativos | ${mdValue(status.subagent_model)} / ${mdValue(status.subagent_reasoning_effort)} |\n` +
   `| Push | ${mdValue(status.push_mode)} (a cada ${mdValue(status.push_every)} commit(s)) |\n` +
   `| Pausa até | ${mdValue(status.pause_until)} |\n\n` +
   `## Agentes coordenados\n\n` +
@@ -155,10 +168,11 @@ print_final_status() {
     "$C_DIM" "$C_BOLD" "$C_DIM" "$C_RESET"
   STATE_PATH="$STATE_ROOT/status.json" node <<'NODE'
 const fs = require('fs');
-try {
-  const s = JSON.parse(fs.readFileSync(process.env.STATE_PATH, 'utf8'));
-  const value = v => String(v ?? '—').replace(/\r?\n/g, ' ');
+  try {
+    const s = JSON.parse(fs.readFileSync(process.env.STATE_PATH, 'utf8'));
+    const value = v => String(v ?? '—').replace(/\r?\n/g, ' ');
   const agents = Array.isArray(s.agents) ? s.agents : [];
+  console.log(`│ controlador ${value(s.controller === 'runner' ? 'runner legado' : 'supervisor do chat')}`);
   console.log(`│ fase        ${value(s.phase)}`);
   console.log(`│ sprint      ${value(s.sprint)}`);
   console.log(`│ conta       ${value(s.account)}`);

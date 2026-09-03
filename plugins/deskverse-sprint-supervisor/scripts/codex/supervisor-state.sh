@@ -252,20 +252,29 @@ commit_dirty_checkpoint() {
 }
 
 ensure_state() {
-  if [[ -f "$STATE_PATH" ]]; then return; fi
   STATE_PATH="$STATE_PATH" QUEUE_PATH="$QUEUE_PATH" node <<'NODE'
 const fs = require('fs');
 const statePath = process.env.STATE_PATH;
 const queue = JSON.parse(fs.readFileSync(process.env.QUEUE_PATH, 'utf8').replace(/^\uFEFF/, ''));
-const state = {
+const defaults = {
   completed: [], current: null, status: 'idle',
   session_id: null, pause_until: null, started_at: null, finished_at: null,
   active_account: null, session_account: null, account_cooldowns: {},
   last_commit: null, last_error: null, budget_remaining_percent: null,
   budget_decision: null,
   push_base_commit: null, commits_since_push: 0, last_push_at: null, last_push_error: null,
+  controller: 'chat', supervisor_role: 'chat_supervisor',
+  supervisor_model: 'chat', supervisor_reasoning_effort: 'chat',
+  plan_path: null, handoff_path: null, last_reconciled_at: null,
   usage: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, turns: 0 }
 };
+let state = {};
+if (fs.existsSync(statePath)) {
+  try { state = JSON.parse(fs.readFileSync(statePath, 'utf8').replace(/^\uFEFF/, '')); } catch { state = {}; }
+}
+for (const [key, value] of Object.entries(defaults)) {
+  if (state[key] === undefined) state[key] = value;
+}
 fs.writeFileSync(`${statePath}.tmp`, JSON.stringify(state, null, 2));
 fs.renameSync(`${statePath}.tmp`, statePath);
 NODE

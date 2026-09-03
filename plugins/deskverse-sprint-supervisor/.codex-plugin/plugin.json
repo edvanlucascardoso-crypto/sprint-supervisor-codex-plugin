@@ -1,15 +1,15 @@
 {
   "name": "deskverse-sprint-supervisor",
-  "version": "0.1.0+codex.20260903141732",
-  "description": "Liste, selecione e execute sprints do Deskverse.",
+  "version": "0.2.0+codex.20260903160000",
+  "description": "Supervisione sprints no chat e delegue a execucao a subagentes nativos.",
   "author": {
     "name": "Deskverse"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Sprint Supervisor",
-    "shortDescription": "Selecione e execute sprints do Deskverse.",
-    "longDescription": "Lista sprints pendentes, executa apenas os IDs escolhidos e acompanha o supervisor persistente no Codex.",
+    "shortDescription": "Supervisione sprints com subagentes nativos.",
+    "longDescription": "O chat supervisiona a fila, prepara handoffs e delega cada sprint a subagentes nativos; o runner autonomo legado permanece disponivel explicitamente.",
     "developerName": "Deskverse",
     "category": "Productivity",
     "capabilities": [
@@ -17,9 +17,10 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Liste as sprints pendentes e aguarde minha sele\u00e7\u00e3o.",
-      "Execute as sprints 01 e 02a em sequ\u00eancia.",
-      "Mostre o status atual do supervisor."
+      "Liste a fila de sprints.",
+      "Prepare o handoff da proxima sprint.",
+      "Mostre o status do supervisor.",
+      "Execute sprints 01 e 02a."
     ]
   }
 }
